@@ -11,3 +11,14 @@ Increase *num_top* to allow for more unbalanced matches.
 
 ## Todo
 - [ ] implement penalization to prefer different pairs being selected
+
+
+## Run
+
+```bash
+
+pip install -r requirements.txt
+
+python tournament.py --num-players 11 --num-rounds 10 
+
+```

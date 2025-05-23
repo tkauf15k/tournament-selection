@@ -9,3 +9,5 @@ Finally, takes a random solution from the top *n* fittest ones.
 Decrease *num_samples* to decrease execution time.
 Increase *num_top* to allow for more unbalanced matches. 
 
+## Todo
+- [ ] implement penalization to prefer different pairs being selected

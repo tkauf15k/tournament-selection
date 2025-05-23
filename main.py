@@ -1,3 +1,4 @@
+import typer
 from pysat.solvers import Minisat22
 import random
 from functools import cached_property
@@ -301,11 +302,7 @@ def get_matches(pairs: list[Pair]):
     return matches
 
 
-def run():
-    num_samples = 1000
-    num_top = 50
-    number_rounds = 10
-    num_players = 11
+def run(num_players: int = 11, num_rounds: int = 10, top: int = 50, num_samples: int = 1000):
     num_games_per_round = math.ceil(num_players / 4)
     num_jokers = 4 * num_games_per_round - num_players
     players = create_players(num_players=num_players, rand=True, jokers=num_jokers)  # add a secondary player for the jokers
@@ -314,9 +311,9 @@ def run():
     # filter such that the jokers cannot play with themselves
     # add a filter such that constraints can be implemented (MM, FF, FM, unrestricted) +++
 
-    for round_idx in range(number_rounds):
+    for round_idx in range(num_rounds):
         # add solver for pairs with constraints
-        top_n = TopN(num_top)
+        top_n = TopN(top)
         with Timer() as t:
             for i in range(num_samples):
                 if sample := s.sample(num_games_per_round * 2):
@@ -335,4 +332,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    typer.run(run)

@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import typer
 from pysat.solvers import Minisat22
 import random
@@ -23,7 +25,7 @@ class Player(BaseModel):
         return str(self)
 
     def __str__(self):
-        s = f"{self.id_}{self.gender}"
+        s = f"{self.id_}{self.gender}({self.skill})"
         if self.joker_for:
             s += f" J{self.joker_for.id_}"
         return s
@@ -46,11 +48,14 @@ def create_players(num_players: int, *, rand: bool = True, jokers: int = 0) -> l
                idx in range(num_players)]
     max_id = max(players, key=lambda player: player.id_).id_ + 1
     if jokers > 0:
-        cpy = players.copy()
-        random.shuffle(cpy)
+        males = [p for p in players if p.gender == "m"]
+        females = [p for p in players if p.gender == "f"]
+        random.shuffle(males)
+        random.shuffle(females)
+        candidates = list(p for m,f in zip(males, females) for p in [m,f])
         for i in range(jokers):
             players.append(
-                cpy[i].as_joker(max_id + i)
+                candidates[i].as_joker(max_id + i)
             )
     return players
 
@@ -93,10 +98,9 @@ class NormalizedSkillMetricsProvider(PlayerMetricsProvider):
 
 
 class Pair:
-    def __init__(self, player1: Player, player2: Player, joker_pair: bool = False):
+    def __init__(self, player1: Player, player2: Player):
         self.player1 = player1
         self.player2 = player2
-        self._joker_pair = joker_pair
 
     def value(self):
         s1 = self.player1.skill - MAX_SKILL / 2.0
@@ -135,6 +139,9 @@ class PairFilter(Protocol):
     def is_valid(self, p1: Player, p2: Player) -> bool:
         return not (p1.joker_for == p2 and p2.joker_for == p1)
 
+    def validate_players(self, players: list[Player]) -> bool:
+        return True
+
 
 class EmptyFilter(PairFilter):
     def is_valid(self, p1: Player, p2: Player) -> bool:
@@ -145,11 +152,20 @@ class MixedFilter(PairFilter):
     def is_valid(self, p1: Player, p2: Player) -> bool:
         return PairFilter.is_valid(self, p1, p2) and p1.gender != p2.gender
 
+    def validate_players(self, players: list[Player]) -> bool:
+        males = len([player for player in players if player.gender == "m"])
+        females = len([player for player in players if player.gender == "f"])
+        return males == females
+
 
 class SameGenderFilter(PairFilter):
     def is_valid(self, p1: Player, p2: Player) -> bool:
         return PairFilter.is_valid(self, p1, p2) and p1.gender == p2.gender
 
+    def validate_players(self, players: list[Player]) -> bool:
+        males = len([player for player in players if player.gender == "m"])
+        females = len([player for player in players if player.gender == "f"])
+        return males == females
 
 class Filter:
     same: PairFilter = SameGenderFilter()
@@ -157,15 +173,36 @@ class Filter:
     mixed: PairFilter = MixedFilter()
 
 
+class HistoryMap:
+
+    def __init__(self, base: float = 0.5):
+        self._data = defaultdict(int)
+        self._base = base
+
+    def add_game(self, pair1: Pair, pair2: Pair):
+        self._data[pair1.id] += 1
+        self._data[pair2.id] += 1
+
+    def get_value(self, pair: Pair) -> float:
+        return self._base ** self._data[pair.id]
+
+
 class PairSet:
-    def __init__(self, players: list[Player], filter_strategy: PairFilter | None = None):
+    def __init__(self, players: list[Player], filter_strategy: PairFilter | None = None, history: HistoryMap | None = None):
         if not filter_strategy:
             filter_strategy = Filter.default
+        if not filter_strategy.validate_players(players):
+            raise ValueError("Player set does not match the filter.")
         self._original_pairs = [Pair(p1, p2) for p1 in players for p2 in players if p1.id_ < p2.id_ and filter_strategy.is_valid(p1, p2)]
+        self._pair_map = {p.id: p for p in self._original_pairs}
         self._pairs = set(self._original_pairs)
+        self._history = history
 
     def __iter__(self):
         return iter(self._pairs)
+
+    def pair_by_id(self, id_):
+        return self._pair_map[id_]
 
     def remove(self, pair: Pair) -> None:
 
@@ -181,9 +218,9 @@ class PairSet:
         return len(self._pairs) > 0
 
     def pick(self) -> Pair:
-        ranking = list(x.value() for x in self._pairs)
+        ranking = list(x.value() * self._history.get_value(x) for x in self._pairs)
         total_sum = 1.0 * sum(ranking)
-        probabilities = list(1.0 * x.value() / total_sum for x in self._pairs)
+        probabilities = list(x / total_sum for x in ranking)
         selection = np.random.choice(np.array(list(self._pairs)), size=1, p=np.array(probabilities))
         selected_pair = selection[0]
         self.remove(selected_pair)
@@ -302,14 +339,18 @@ def get_matches(pairs: list[Pair]):
     return matches
 
 
-def run(num_players: int = 11, num_rounds: int = 10, top: int = 50, num_samples: int = 1000):
+def run(num_players: int = 28, num_rounds: int = 10, top: int = 50, num_samples: int = 1000):
     num_games_per_round = math.ceil(num_players / 4)
     num_jokers = 4 * num_games_per_round - num_players
     players = create_players(num_players=num_players, rand=True, jokers=num_jokers)  # add a secondary player for the jokers
 
-    s = PairSet(players, filter_strategy=Filter.default)
+    history = HistoryMap()
+    s = PairSet(players, filter_strategy=Filter.mixed, history=history)
     # filter such that the jokers cannot play with themselves
     # add a filter such that constraints can be implemented (MM, FF, FM, unrestricted) +++
+
+    pair_count = defaultdict(int)
+    match_count = defaultdict(int)
 
     for round_idx in range(num_rounds):
         # add solver for pairs with constraints
@@ -328,8 +369,20 @@ def run(num_players: int = 11, num_rounds: int = 10, top: int = 50, num_samples:
         print("\tMatches:")
         for idx, (p1, p2) in enumerate(selected_pairs):
             print(f"\t\tMatch {idx + 1}:\t[{p1}] vs [{p2}] ==> {prob:.3f}")
+            history.add_game(p1, p2)
+            pair_count[p1.id] += 1
+            pair_count[p2.id] += 1
+            match_count[(p1.id, p2.id)] += 1
         print("---------------------------------------------------------------")
 
+    print(f"{len(pair_count)} different pairs.")
+    for pair, cnt in sorted([(s.pair_by_id(p), cnt) for p, cnt in pair_count.items()], key=lambda x: x[1], reverse=True):
+        print(f"{pair}: {cnt}")
+
+    print("---------------------------------------------------------------")
+
+    for (p1,p2), cnt in sorted([((s.pair_by_id(p1),(s.pair_by_id(p2))), cnt) for (p1,p2), cnt in match_count.items()], key=lambda x: x[1], reverse=True):
+        print(f"{p1} vs. {p2}: {cnt}")
 
 if __name__ == "__main__":
     typer.run(run)

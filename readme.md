@@ -10,7 +10,7 @@ Decrease *num_samples* to decrease execution time.
 Increase *num_top* to allow for more unbalanced matches. 
 
 ## Todo
-- [ ] implement penalization to prefer different pairs being selected
+- [x] implement penalization to prefer different pairs being selected
 
 
 ## Run

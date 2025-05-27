@@ -52,7 +52,7 @@ def create_players(num_players: int, *, rand: bool = True, jokers: int = 0) -> l
         females = [p for p in players if p.gender == "f"]
         random.shuffle(males)
         random.shuffle(females)
-        candidates = list(p for m,f in zip(males, females) for p in [m,f])
+        candidates = list(p for m, f in zip(males, females) for p in [m, f])
         for i in range(jokers):
             players.append(
                 candidates[i].as_joker(max_id + i)
@@ -109,7 +109,10 @@ class Pair:
         a = abs(s1 + s2 - 1) / MAX_SKILL
 
         return 1 - a
-        # return 1 - (1.0 * abs(self.player1.skill + self.player2.skill) / (1.0 * MAX_SKILL))
+
+    @property
+    def mixed(self):
+        return self.player1.gender != self.player2.gender
 
     @cached_property
     def players(self):
@@ -142,6 +145,9 @@ class PairFilter(Protocol):
     def validate_players(self, players: list[Player]) -> bool:
         return True
 
+    def value(self, pair: "Pair") -> float:
+        return 1
+
 
 class EmptyFilter(PairFilter):
     def is_valid(self, p1: Player, p2: Player) -> bool:
@@ -157,6 +163,11 @@ class MixedFilter(PairFilter):
         females = len([player for player in players if player.gender == "f"])
         return males == females
 
+    def value(self, pair: "Pair") -> float:
+        if pair.player1.gender != pair.player2.gender:
+            return 1
+        return 0.5
+
 
 class SameGenderFilter(PairFilter):
     def is_valid(self, p1: Player, p2: Player) -> bool:
@@ -166,6 +177,12 @@ class SameGenderFilter(PairFilter):
         males = len([player for player in players if player.gender == "m"])
         females = len([player for player in players if player.gender == "f"])
         return males == females
+
+    def value(self, pair: "Pair") -> float:
+        if pair.player1.gender == pair.player2.gender:
+            return 1
+        return 0.5
+
 
 class Filter:
     same: PairFilter = SameGenderFilter()
@@ -188,7 +205,8 @@ class HistoryMap:
 
 
 class PairSet:
-    def __init__(self, players: list[Player], filter_strategy: PairFilter | None = None, history: HistoryMap | None = None):
+    def __init__(self, players: list[Player], filter_strategy: PairFilter | None = None, soft_filter: PairFilter | None = None,
+                 history: HistoryMap | None = None):
         if not filter_strategy:
             filter_strategy = Filter.default
         if not filter_strategy.validate_players(players):
@@ -197,6 +215,7 @@ class PairSet:
         self._pair_map = {p.id: p for p in self._original_pairs}
         self._pairs = set(self._original_pairs)
         self._history = history
+        self._soft_filter = soft_filter
 
     def __iter__(self):
         return iter(self._pairs)
@@ -218,7 +237,7 @@ class PairSet:
         return len(self._pairs) > 0
 
     def pick(self) -> Pair:
-        ranking = list(x.value() * self._history.get_value(x) for x in self._pairs)
+        ranking = list(x.value() * self._history.get_value(x) * self._soft_filter.value(x) for x in self._pairs)
         total_sum = 1.0 * sum(ranking)
         probabilities = list(x / total_sum for x in ranking)
         selection = np.random.choice(np.array(list(self._pairs)), size=1, p=np.array(probabilities))
@@ -345,7 +364,7 @@ def run(num_players: int = 28, num_rounds: int = 10, top: int = 50, num_samples:
     players = create_players(num_players=num_players, rand=True, jokers=num_jokers)  # add a secondary player for the jokers
 
     history = HistoryMap()
-    s = PairSet(players, filter_strategy=Filter.mixed, history=history)
+    s = PairSet(players, filter_strategy=Filter.default, soft_filter=Filter.mixed, history=history)
     # filter such that the jokers cannot play with themselves
     # add a filter such that constraints can be implemented (MM, FF, FM, unrestricted) +++
 
@@ -377,12 +396,14 @@ def run(num_players: int = 28, num_rounds: int = 10, top: int = 50, num_samples:
 
     print(f"{len(pair_count)} different pairs.")
     for pair, cnt in sorted([(s.pair_by_id(p), cnt) for p, cnt in pair_count.items()], key=lambda x: x[1], reverse=True):
-        print(f"{pair}: {cnt}")
+        print(f"{pair}: {cnt} ({'mixed' if pair.mixed else 'same'})")
 
     print("---------------------------------------------------------------")
 
-    for (p1,p2), cnt in sorted([((s.pair_by_id(p1),(s.pair_by_id(p2))), cnt) for (p1,p2), cnt in match_count.items()], key=lambda x: x[1], reverse=True):
+    for (p1, p2), cnt in sorted([((s.pair_by_id(p1), (s.pair_by_id(p2))), cnt) for (p1, p2), cnt in match_count.items()], key=lambda x: x[1],
+                                reverse=True):
         print(f"{p1} vs. {p2}: {cnt}")
+
 
 if __name__ == "__main__":
     typer.run(run)
